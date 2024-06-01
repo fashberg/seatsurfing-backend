@@ -28,8 +28,8 @@ func TestBookingsEmptyResult(t *testing.T) {
 func TestBookingsCRUD(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
-	user2 := createTestUserOrgAdmin(org)
-	loginResponse2 := loginTestUser(user2.ID)
+	adminUser := createTestUserOrgAdmin(org)
+	loginResponse2 := loginTestUser(adminUser.ID)
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5000")
 
 	// Create location
@@ -70,9 +70,9 @@ func TestBookingsCRUD(t *testing.T) {
 	checkTestString(t, locationID, resBody.Space.Location.ID)
 	checkTestString(t, "Location 1", resBody.Space.Location.Name)
 
-	// 3. Update
+	// 3. Update by admin
 	payload = "{\"spaceId\": \"" + spaceID + "\", \"enter\": \"2030-09-01T08:45:00Z\", \"leave\": \"2030-09-01T18:15:00Z\"}"
-	req = newHTTPRequest("PUT", "/booking/"+id, loginResponse.UserID, bytes.NewBufferString(payload))
+	req = newHTTPRequest("PUT", "/booking/"+id, adminUser.ID, bytes.NewBufferString(payload))
 	res = executeTestRequest(req)
 	checkTestResponseCode(t, http.StatusNoContent, res.Code)
 
@@ -88,6 +88,12 @@ func TestBookingsCRUD(t *testing.T) {
 	checkTestString(t, "H234", resBody2.Space.Name)
 	checkTestString(t, locationID, resBody2.Space.Location.ID)
 	checkTestString(t, "Location 1", resBody2.Space.Location.Name)
+
+	// 3. Update by Non-admin
+	payload = "{\"spaceId\": \"" + spaceID + "\", \"enter\": \"2030-09-01T09:00:00Z\", \"leave\": \"2030-09-01T18:15:00Z\"}"
+	req = newHTTPRequest("PUT", "/booking/"+id, user.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusNoContent, res.Code)
 
 	// 4. Delete
 	req = newHTTPRequest("DELETE", "/booking/"+id, loginResponse.UserID, nil)
@@ -334,8 +340,8 @@ func TestBookingsGetForeign(t *testing.T) {
 func TestBookingsUpdateForeign(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
-	user2 := createTestUserOrgAdmin(org)
-	loginResponse2 := loginTestUser(user2.ID)
+	adminUser := createTestUserOrgAdmin(org)
+	loginResponse2 := loginTestUser(adminUser.ID)
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5000")
 
 	// Create location
@@ -362,6 +368,12 @@ func TestBookingsUpdateForeign(t *testing.T) {
 	res = executeTestRequest(req)
 	checkTestResponseCode(t, http.StatusCreated, res.Code)
 	id := res.Header().Get("X-Object-Id")
+
+	// Update foreign booking as admin
+	payload = "{\"spaceId\": \"" + spaceID + "\", \"enter\": \"2030-09-01T08:30:00+02:00\", \"leave\": \"2030-09-01T17:30:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+id, adminUser.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusNoContent, res.Code)
 
 	// Create location #2
 	payload = `{"name": "Location 2"}`
@@ -719,6 +731,7 @@ func TestBookingsConflictUpdateOther(t *testing.T) {
 func TestBookingsNegativeBookingDuration(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	user := createTestUserInOrg(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 1).UTC(),
@@ -726,13 +739,14 @@ func TestBookingsNegativeBookingDuration(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, false, res)
 }
 
 func TestBookingsValidBookingDuration(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	user := createTestUserInOrg(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 1).UTC(),
@@ -740,14 +754,17 @@ func TestBookingsValidBookingDuration(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
 func TestBookingsInvalidBookingDuration(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "12")
+	user := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 1).UTC(),
@@ -755,8 +772,16 @@ func TestBookingsInvalidBookingDuration(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, false, res)
+	
+	res = router.isValidBookingDuration(m, org.ID, adminUser)
+	checkTestBool(t, true, res)
+
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "0")
+	res = router.isValidBookingDuration(m, org.ID, adminUser)
+	checkTestBool(t, false, res)
+
 }
 
 func TestBookingsDailyBasisBookingValid(t *testing.T) {
@@ -764,6 +789,7 @@ func TestBookingsDailyBasisBookingValid(t *testing.T) {
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "24")
 	GetSettingsRepository().Set(org.ID, SettingDailyBasisBooking.Name, "1")
+	user := createTestUserInOrg(org)
 	tm := time.Now().Add(time.Hour * 24).UTC()
 
 	m := &BookingRequest{
@@ -772,7 +798,7 @@ func TestBookingsDailyBasisBookingValid(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
@@ -781,6 +807,7 @@ func TestBookingsDailyBasisBookingSameDayValid(t *testing.T) {
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "24")
 	GetSettingsRepository().Set(org.ID, SettingDailyBasisBooking.Name, "1")
+	user := createTestUserInOrg(org)
 	tm := time.Now().UTC()
 
 	m := &BookingRequest{
@@ -789,7 +816,7 @@ func TestBookingsDailyBasisBookingSameDayValid(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingAdvance(m, org.ID)
+	res := router.isValidBookingAdvance(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
@@ -798,6 +825,7 @@ func TestBookingsDailyBasisBookingInvalidEnter(t *testing.T) {
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "24")
 	GetSettingsRepository().Set(org.ID, SettingDailyBasisBooking.Name, "1")
+	user := createTestUserInOrg(org)
 	tm := time.Now().Add(time.Hour * 24).UTC()
 
 	m := &BookingRequest{
@@ -806,7 +834,7 @@ func TestBookingsDailyBasisBookingInvalidEnter(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, false, res)
 }
 
@@ -815,6 +843,7 @@ func TestBookingsDailyBasisBookingInvalidLeave(t *testing.T) {
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "24")
 	GetSettingsRepository().Set(org.ID, SettingDailyBasisBooking.Name, "1")
+	user := createTestUserInOrg(org)
 	tm := time.Now().Add(time.Hour * 24).UTC()
 
 	m := &BookingRequest{
@@ -823,7 +852,7 @@ func TestBookingsDailyBasisBookingInvalidLeave(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, false, res)
 }
 
@@ -832,6 +861,7 @@ func TestBookingsDailyBasisBookingRoundBookingDurationUp(t *testing.T) {
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "12")
 	GetSettingsRepository().Set(org.ID, SettingDailyBasisBooking.Name, "1")
+	user := createTestUserInOrg(org)
 	tm := time.Now().Add(time.Hour * 24).UTC()
 
 	m := &BookingRequest{
@@ -840,7 +870,7 @@ func TestBookingsDailyBasisBookingRoundBookingDurationUp(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
@@ -848,6 +878,7 @@ func TestBookingsValidBorderBookingDuration(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "3")
+	user := createTestUserInOrg(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 1).UTC(),
@@ -855,14 +886,17 @@ func TestBookingsValidBorderBookingDuration(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
 func TestBookingsInvalidBorderBookingDuration(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingDurationHours.Name, "3")
+	user := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 1).UTC(),
@@ -870,29 +904,63 @@ func TestBookingsInvalidBorderBookingDuration(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingDuration(m, org.ID)
+	res := router.isValidBookingDuration(m, org.ID, user)
+	checkTestBool(t, false, res)
+
+	res = router.isValidBookingDuration(m, org.ID, adminUser)
+	checkTestBool(t, true, res)
+
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "0")
+	res = router.isValidBookingDuration(m, org.ID, adminUser)
 	checkTestBool(t, false, res)
 }
 
 func TestBookingsPastEnterDate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5")
+	user := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	m := &BookingRequest{
-		Enter: time.Now().Add(time.Hour * -5).UTC(),
-		Leave: time.Now().Add(time.Hour * -2).UTC(),
+		Enter: time.Now().Add(time.Hour * -25).UTC(),
+		Leave: time.Now().Add(time.Hour * 1).UTC(),
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingAdvance(m, org.ID)
+	res := router.isValidBookingAdvance(m, org.ID, user)
 	checkTestBool(t, false, res)
+
+	// also admins cannot book in past
+	res = router.isValidBookingAdvance(m, org.ID, adminUser)
+	checkTestBool(t, false, res)
+}
+
+
+func TestBookingsEarlyMorningEnterDate(t *testing.T) {
+	clearTestDB()
+	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
+	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5")
+	user := createTestUserInOrg(org)
+
+	now := time.Now().UTC()
+	m := &BookingRequest{
+		Enter: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()),
+		Leave: time.Date(now.Year(), now.Month(), now.Day(), 23, 0, 0, 0, now.Location()),
+	}
+
+	router := &BookingRouter{}
+	res := router.isValidBookingAdvance(m, org.ID, user)
+	checkTestBool(t, true, res)
 }
 
 func TestBookingsValidFutureAdvanceDate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5")
+	user := createTestUserInOrg(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 2 * 24).UTC(),
@@ -900,7 +968,7 @@ func TestBookingsValidFutureAdvanceDate(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingAdvance(m, org.ID)
+	res := router.isValidBookingAdvance(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
@@ -908,6 +976,7 @@ func TestBookingsValidBorderAdvanceDate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5")
+	user := createTestUserInOrg(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 5 * 24).Add(time.Hour * 1).UTC(),
@@ -915,14 +984,17 @@ func TestBookingsValidBorderAdvanceDate(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingAdvance(m, org.ID)
+	res := router.isValidBookingAdvance(m, org.ID, user)
 	checkTestBool(t, true, res)
 }
 
 func TestBookingsInvalidBorderAdvanceDate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5")
+	user := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 6 * 24).Add(time.Hour * 1).UTC(),
@@ -930,14 +1002,25 @@ func TestBookingsInvalidBorderAdvanceDate(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingAdvance(m, org.ID)
+	res := router.isValidBookingAdvance(m, org.ID, user)
 	checkTestBool(t, false, res)
+
+	res = router.isValidBookingAdvance(m, org.ID, adminUser)
+	checkTestBool(t, true, res)
+
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "0")
+	res = router.isValidBookingAdvance(m, org.ID, adminUser)
+	checkTestBool(t, false, res)
+
 }
 
 func TestBookingsInvalidFutureAdvanceDate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, "5")
+	user := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	m := &BookingRequest{
 		Enter: time.Now().Add(time.Hour * 7 * 24).UTC(),
@@ -945,7 +1028,14 @@ func TestBookingsInvalidFutureAdvanceDate(t *testing.T) {
 	}
 
 	router := &BookingRouter{}
-	res := router.isValidBookingAdvance(m, org.ID)
+	res := router.isValidBookingAdvance(m, org.ID, user)
+	checkTestBool(t, false, res)
+
+	res = router.isValidBookingAdvance(m, org.ID, adminUser)
+	checkTestBool(t, true, res)
+
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "0")
+	res = router.isValidBookingAdvance(m, org.ID, adminUser)
 	checkTestBool(t, false, res)
 }
 
@@ -956,7 +1046,7 @@ func TestBookingsValidMaxUpcomingBookings(t *testing.T) {
 	user := createTestUserInOrg(org)
 
 	router := &BookingRouter{}
-	res := router.isValidMaxUpcomingBookings(org.ID, user.ID)
+	res := router.isValidMaxUpcomingBookings(org.ID, user)
 	checkTestBool(t, true, res)
 }
 
@@ -985,7 +1075,7 @@ func TestBookingsInvalidMaxUpcomingBookings(t *testing.T) {
 	GetBookingRepository().Create(b)
 
 	router := &BookingRouter{}
-	res := router.isValidMaxUpcomingBookings(org.ID, user.ID)
+	res := router.isValidMaxUpcomingBookings(org.ID, user)
 	checkTestBool(t, false, res)
 }
 
@@ -1123,11 +1213,13 @@ func TestBookingsSameDay(t *testing.T) {
 func TestBookingsMaxConcurrentLimitExceeded(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, strconv.Itoa(365*10))
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingsPerUser.Name, "1")
 	user1 := createTestUserInOrg(org)
 	user2 := createTestUserInOrg(org)
 	user3 := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	l := &Location{
 		Name:                  "Test",
@@ -1157,6 +1249,13 @@ func TestBookingsMaxConcurrentLimitExceeded(t *testing.T) {
 	// Create booking 3
 	payload = "{\"spaceId\": \"" + s3.ID + "\", \"enter\": \"2030-09-01T11:00:00+02:00\", \"leave\": \"2030-09-01T15:00:00+02:00\"}"
 	req = newHTTPRequest("POST", "/booking/", user3.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusBadRequest, res.Code)
+	checkTestString(t, strconv.Itoa(ResponseCodeBookingLocationMaxConcurrent), res.Header().Get("X-Error-Code"))
+
+	// Create booking 3 as admin -> should also NOT possible
+	payload = "{\"spaceId\": \"" + s3.ID + "\", \"enter\": \"2030-09-01T11:00:00+02:00\", \"leave\": \"2030-09-01T15:00:00+02:00\"}"
+	req = newHTTPRequest("POST", "/booking/", adminUser.ID, bytes.NewBufferString(payload))
 	res = executeTestRequest(req)
 	checkTestResponseCode(t, http.StatusBadRequest, res.Code)
 	checkTestString(t, strconv.Itoa(ResponseCodeBookingLocationMaxConcurrent), res.Header().Get("X-Error-Code"))
@@ -1204,11 +1303,13 @@ func TestBookingsMaxConcurrentLimitOKOnUpdate(t *testing.T) {
 func TestBookingsMaxConcurrentLimitExceededOnUpdate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, strconv.Itoa(365*10))
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingsPerUser.Name, "1")
 	user1 := createTestUserInOrg(org)
 	user2 := createTestUserInOrg(org)
 	user3 := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	l := &Location{
 		Name:                  "Test",
@@ -1245,6 +1346,13 @@ func TestBookingsMaxConcurrentLimitExceededOnUpdate(t *testing.T) {
 	// Modify booking 3
 	payload = "{\"spaceId\": \"" + s3.ID + "\", \"enter\": \"2030-09-01T11:00:00+02:00\", \"leave\": \"2030-09-01T13:00:00+02:00\"}"
 	req = newHTTPRequest("PUT", "/booking/"+id, user3.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusBadRequest, res.Code)
+	checkTestString(t, strconv.Itoa(ResponseCodeBookingLocationMaxConcurrent), res.Header().Get("X-Error-Code"))
+
+	// Modify booking 3 as admin (cannot override concurrency)
+	payload = "{\"spaceId\": \"" + s3.ID + "\", \"enter\": \"2030-09-01T11:00:00+02:00\", \"leave\": \"2030-09-01T13:00:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+id, adminUser.ID, bytes.NewBufferString(payload))
 	res = executeTestRequest(req)
 	checkTestResponseCode(t, http.StatusBadRequest, res.Code)
 	checkTestString(t, strconv.Itoa(ResponseCodeBookingLocationMaxConcurrent), res.Header().Get("X-Error-Code"))
@@ -1829,11 +1937,13 @@ func TestBookingsUserConcurrentLimitOkOnUpdate(t *testing.T) {
 func TestBookingsUserConcurrentLimitExceededOnUpdate(t *testing.T) {
 	clearTestDB()
 	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
 	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, strconv.Itoa(365*10))
 	GetSettingsRepository().Set(org.ID, SettingMaxBookingsPerUser.Name, "50")
 	GetSettingsRepository().Set(org.ID, SettingMaxConcurrentBookingsPerUser.Name, "2")
 	user1 := createTestUserInOrg(org)
 	user2 := createTestUserInOrg(org)
+	adminUser:= createTestUserOrgAdmin(org)
 
 	l := &Location{
 		Name:                  "Test",
@@ -1885,4 +1995,84 @@ func TestBookingsUserConcurrentLimitExceededOnUpdate(t *testing.T) {
 	res = executeTestRequest(req)
 	checkTestResponseCode(t, http.StatusBadRequest, res.Code)
 	checkTestString(t, strconv.Itoa(ResponseCodeBookingMaxConcurrentForUser), res.Header().Get("X-Error-Code"))
+	
+	// admin move last booking, now overlaps with 2 previous, but should be ok
+	payload = "{\"spaceId\": \"" + s4.ID + "\", \"enter\": \"2030-09-01T11:00:00+02:00\", \"leave\": \"2030-09-01T13:00:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+id, adminUser.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusNoContent, res.Code)
+}
+
+func TestBookingsNonExistingUsers(t *testing.T) {
+	clearTestDB()
+	org := createTestOrg("test.com")
+	GetSettingsRepository().Set(org.ID, SettingAllowBookingsNonExistingUsers.Name, "1")
+	GetSettingsRepository().Set(org.ID, SettingNoAdminRestrictions.Name, "1")
+	GetSettingsRepository().Set(org.ID, SettingMaxDaysInAdvance.Name, strconv.Itoa(365*10))
+	user := createTestUserInOrg(org)
+	adminUser := createTestUserOrgAdmin(org)
+
+	l := &Location{
+		Name:                  "Test",
+		MaxConcurrentBookings: 10,
+		OrganizationID:        org.ID,
+	}
+	GetLocationRepository().Create(l)
+	s1 := &Space{Name: "Test 1", LocationID: l.ID}
+	GetSpaceRepository().Create(s1)
+
+
+	// admin books 
+	payload := "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"noobie@test.com\", \"enter\": \"2030-09-01T07:30:00+02:00\", \"leave\": \"2030-09-01T12:00:00+02:00\"}"
+	req := newHTTPRequest("POST", "/booking/", adminUser.ID, bytes.NewBufferString(payload))
+	res := executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusCreated, res.Code)
+	bookingID := res.Header().Get("X-Object-Id")
+
+	// modify to another user
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"noobie2@test.com\", \"enter\": \"2030-09-02T11:00:00+02:00\", \"leave\": \"2030-09-02T13:00:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+bookingID, adminUser.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusNoContent, res.Code)
+	
+	// user books 
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"noobie3@test.com\", \"enter\": \"2030-09-03T07:30:00+02:00\", \"leave\": \"2030-09-03T12:00:00+02:00\"}"
+	req = newHTTPRequest("POST", "/booking/", user.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusForbidden, res.Code)
+
+	// user tries to overtake foreign booking
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"" + user.Email + "\", \"enter\": \"2030-09-01T11:00:00+02:00\", \"leave\": \"2030-09-01T13:00:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+bookingID, user.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusForbidden, res.Code)
+
+	// user books normal
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"enter\": \"2030-09-04T07:30:00+02:00\", \"leave\": \"2030-09-04T12:00:00+02:00\"}"
+	req = newHTTPRequest("POST", "/booking/", user.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusCreated, res.Code)
+	bookingID = res.Header().Get("X-Object-Id")
+	
+	// user tries to change to new user
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"noobie4@test.com\", \"enter\": \"2030-09-04T07:30:00+02:00\", \"leave\": \"2030-09-04T12:00:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+bookingID, user.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusForbidden, res.Code)
+
+	// user tries to change to existing user
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"noobie@test.com\", \"enter\": \"2030-09-04T07:30:00+02:00\", \"leave\": \"2030-09-04T12:00:00+02:00\"}"
+	req = newHTTPRequest("PUT", "/booking/"+bookingID, user.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusForbidden, res.Code)
+	
+	// disallow feature
+	GetSettingsRepository().Set(org.ID, SettingAllowBookingsNonExistingUsers.Name, "0")
+
+	payload = "{\"spaceId\": \"" + s1.ID + "\", \"userEmail\": \"noobie5@test.com\", \"enter\": \"2030-09-05T07:30:00+02:00\", \"leave\": \"2030-09-05T12:00:00+02:00\"}"
+	req = newHTTPRequest("POST", "/booking/", adminUser.ID, bytes.NewBufferString(payload))
+	res = executeTestRequest(req)
+	checkTestResponseCode(t, http.StatusForbidden, res.Code)
+
+
 }

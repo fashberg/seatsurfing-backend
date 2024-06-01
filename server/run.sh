@@ -20,5 +20,3 @@ DEV=1 ORG_SIGNUP_ENABLED=1 ORG_SIGNUP_DELETE=1 \
     go run `ls *.go | grep -v _test.go`
 docker stop mailhog
 docker rm mailhog
-docker stop seatsurfingdb
-docker rm seatsurfingdb
